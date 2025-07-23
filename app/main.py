@@ -2,6 +2,8 @@ import socket  # noqa: F401
 import threading
 import time
 import sys
+import os
+import struct
 
 BUF_SIZE = 4096
 
@@ -52,6 +54,173 @@ def cleanup_expired_key(key):
         del data_store[key]
     if key in expiry_store:
         del expiry_store[key]
+
+
+def read_size_encoding(data, offset):
+    """Read size-encoded value from RDB data."""
+    if offset >= len(data):
+        return 0, offset
+    
+    first_byte = data[offset]
+    first_two_bits = (first_byte & 0xC0) >> 6  # Get first 2 bits
+    
+    if first_two_bits == 0b00:  # 00: size is remaining 6 bits
+        size = first_byte & 0x3F
+        return size, offset + 1
+    elif first_two_bits == 0b01:  # 01: size is next 14 bits (big-endian)
+        if offset + 1 >= len(data):
+            return 0, offset + 1
+        size = ((first_byte & 0x3F) << 8) | data[offset + 1]
+        return size, offset + 2
+    elif first_two_bits == 0b10:  # 10: size is next 4 bytes (big-endian)
+        if offset + 4 >= len(data):
+            return 0, offset + 4
+        size = struct.unpack('>I', data[offset + 1:offset + 5])[0]
+        return size, offset + 5
+    else:  # 11: special string encoding
+        return first_byte, offset + 1
+
+
+def read_string_encoding(data, offset):
+    """Read string-encoded value from RDB data."""
+    size_info, new_offset = read_size_encoding(data, offset)
+    
+    # Check if it's a special string encoding (first 2 bits are 11)
+    if isinstance(size_info, int) and (size_info & 0xC0) == 0xC0:
+        encoding_type = size_info & 0x3F
+        
+        if encoding_type == 0:  # 8-bit integer
+            if new_offset >= len(data):
+                return "", new_offset
+            value = str(struct.unpack('b', data[new_offset:new_offset + 1])[0])
+            return value, new_offset + 1
+        elif encoding_type == 1:  # 16-bit integer (little-endian)
+            if new_offset + 1 >= len(data):
+                return "", new_offset + 2
+            value = str(struct.unpack('<h', data[new_offset:new_offset + 2])[0])
+            return value, new_offset + 2
+        elif encoding_type == 2:  # 32-bit integer (little-endian)
+            if new_offset + 3 >= len(data):
+                return "", new_offset + 4
+            value = str(struct.unpack('<i', data[new_offset:new_offset + 4])[0])
+            return value, new_offset + 4
+        else:
+            # Unsupported encoding, skip
+            return "", new_offset
+    else:
+        # Regular string: size followed by string data
+        string_length = size_info
+        if new_offset + string_length > len(data):
+            return "", new_offset + string_length
+        
+        try:
+            string_value = data[new_offset:new_offset + string_length].decode('utf-8')
+            return string_value, new_offset + string_length
+        except UnicodeDecodeError:
+            # If decode fails, return empty string
+            return "", new_offset + string_length
+
+
+def parse_rdb_file(file_path):
+    """Parse RDB file and load keys into data store."""
+    try:
+        with open(file_path, 'rb') as f:
+            data = f.read()
+    except (FileNotFoundError, IOError):
+        # File doesn't exist or can't be read, treat database as empty
+        return
+    
+    if len(data) < 9:
+        # File too short to contain header
+        return
+    
+    offset = 0
+    
+    # Check header: should be "REDIS0011"
+    header = data[offset:offset + 9]
+    if not header.startswith(b'REDIS'):
+        return
+    offset += 9
+    
+    # Skip metadata and auxiliary sections
+    while offset < len(data):
+        if offset >= len(data):
+            break
+            
+        opcode = data[offset]
+        offset += 1
+        
+        if opcode == 0xFF:  # End of file
+            break
+        elif opcode == 0xFE:  # Database selector
+            # Read database index (size encoded)
+            db_index, offset = read_size_encoding(data, offset)
+            # We only care about database 0
+        elif opcode == 0xFB:  # Hash table sizes
+            # Read hash table size info
+            total_keys, offset = read_size_encoding(data, offset)
+            expires_keys, offset = read_size_encoding(data, offset)
+        elif opcode == 0xFA:  # Metadata
+            # Skip metadata key-value pair
+            key, offset = read_string_encoding(data, offset)
+            value, offset = read_string_encoding(data, offset)
+        elif opcode == 0xFC:  # Expire time in milliseconds
+            if offset + 7 >= len(data):
+                break
+            # Read 8-byte timestamp (little-endian)
+            timestamp_ms = struct.unpack('<Q', data[offset:offset + 8])[0]
+            offset += 8
+            expire_time = timestamp_ms / 1000.0  # Convert to seconds
+            
+            # Read value type
+            if offset >= len(data):
+                break
+            value_type = data[offset]
+            offset += 1
+            
+            # Read key
+            key, offset = read_string_encoding(data, offset)
+            
+            # Read value (assuming string for now)
+            if value_type == 0:  # String type
+                value, offset = read_string_encoding(data, offset)
+                with data_store_lock:
+                    data_store[key] = value
+                    expiry_store[key] = expire_time
+        elif opcode == 0xFD:  # Expire time in seconds
+            if offset + 3 >= len(data):
+                break
+            # Read 4-byte timestamp (little-endian)
+            timestamp_s = struct.unpack('<I', data[offset:offset + 4])[0]
+            offset += 4
+            
+            # Read value type
+            if offset >= len(data):
+                break
+            value_type = data[offset]
+            offset += 1
+            
+            # Read key
+            key, offset = read_string_encoding(data, offset)
+            
+            # Read value (assuming string for now)
+            if value_type == 0:  # String type
+                value, offset = read_string_encoding(data, offset)
+                with data_store_lock:
+                    data_store[key] = value
+                    expiry_store[key] = float(timestamp_s)
+        elif opcode == 0x00:  # String value type (no expiry)
+            # Read key
+            key, offset = read_string_encoding(data, offset)
+            
+            # Read value
+            value, offset = read_string_encoding(data, offset)
+            
+            with data_store_lock:
+                data_store[key] = value
+        else:
+            # Unknown opcode, try to skip
+            break
 
 
 def handle_command(client: socket.socket):
@@ -146,6 +315,38 @@ def handle_command(client: socket.socket):
                 else:
                     # Wrong subcommand or arguments
                     client.sendall(b"-ERR wrong number of arguments for 'config' command\r\n")
+            elif command == "KEYS":
+                if len(command_parts) >= 2:
+                    pattern = command_parts[1]
+                    
+                    # Get all keys (for now, only support "*" pattern)
+                    with data_store_lock:
+                        # Clean up expired keys first
+                        expired_keys = []
+                        current_time = time.time()
+                        for key, expire_time in expiry_store.items():
+                            if current_time > expire_time:
+                                expired_keys.append(key)
+                        
+                        for key in expired_keys:
+                            cleanup_expired_key(key)
+                        
+                        # Get remaining keys
+                        if pattern == "*":
+                            keys = list(data_store.keys())
+                        else:
+                            # For now, only support "*" pattern
+                            keys = list(data_store.keys())
+                    
+                    # Return as RESP array
+                    response = f"*{len(keys)}\r\n"
+                    for key in keys:
+                        response += f"${len(key)}\r\n{key}\r\n"
+                    
+                    client.sendall(response.encode())
+                else:
+                    # Wrong number of arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'keys' command\r\n")
             else:
                 # Unknown command
                 client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())
@@ -172,6 +373,11 @@ def parse_arguments():
 
 def main():
     parse_arguments()
+    
+    # Load RDB file if it exists
+    rdb_path = os.path.join(config['dir'], config['dbfilename'])
+    parse_rdb_file(rdb_path)
+    
     server_socket = socket.create_server(("localhost", 6379))
     while True:
         client_socket, client_addr = server_socket.accept()

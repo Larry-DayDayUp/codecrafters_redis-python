@@ -8,6 +8,8 @@ Usage: python run_all_tests.py
 
 import sys
 import os
+import subprocess
+import time
 
 # Add parent directory to path to import from app
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -47,6 +49,19 @@ def run_all_tests():
         print("-" * 24)
         test_config_get()
         
+        # Test 5: RDB Loading
+        print("\n📋 TEST 5: RDB Loading")
+        print("-" * 22)
+        print("Running RDB test...")
+        result = subprocess.run([sys.executable, "tests/test_rdb.py"], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            print("✓ RDB test passed")
+        else:
+            print("❌ RDB test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("RDB test failed")
+        
         # Summary
         print("\n" + "=" * 50)
         print("✅ All tests completed successfully!")
@@ -69,12 +84,27 @@ def check_server_connection():
         return False
 
 if __name__ == "__main__":
-    print("Checking Redis server connection...")
+    # Start server if not running
+    server_process = None
     if not check_server_connection():
-        print("❌ Error: Redis server is not running on localhost:6379")
-        print("Please start the server first with:")
-        print("python app/main.py")
-        sys.exit(1)
+        print("Starting Redis server...")
+        server_process = subprocess.Popen(
+            ["python", "app/main.py"],
+            cwd="c:\\Users\\33233\\Desktop\\CodeCrafter\\codecrafters-redis-python"
+        )
+        time.sleep(2)  # Give server time to start
+        
+        if not check_server_connection():
+            print("❌ Failed to start Redis server")
+            if server_process:
+                server_process.terminate()
+            sys.exit(1)
     
-    print("✅ Server connection verified!")
-    run_all_tests()
+    try:
+        print("✅ Server connection verified!")
+        run_all_tests()
+    finally:
+        # Clean up server if we started it
+        if server_process:
+            server_process.terminate()
+            server_process.wait()

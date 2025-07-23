@@ -1,6 +1,7 @@
 import socket  # noqa: F401
 import threading
 import time
+import sys
 
 BUF_SIZE = 4096
 
@@ -8,6 +9,12 @@ BUF_SIZE = 4096
 data_store = {}
 expiry_store = {}  # key -> expiration timestamp in seconds
 data_store_lock = threading.Lock()
+
+# Configuration parameters
+config = {
+    'dir': '/tmp/redis-data',
+    'dbfilename': 'dump.rdb'
+}
 
 
 def parse_resp(data: bytes):
@@ -125,6 +132,20 @@ def handle_command(client: socket.socket):
                 else:
                     # Wrong number of arguments
                     client.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
+            elif command == "CONFIG":
+                if len(command_parts) >= 3 and command_parts[1].upper() == "GET":
+                    param_name = command_parts[2].lower()
+                    if param_name in config:
+                        param_value = config[param_name]
+                        # Return as RESP array with 2 elements: [param_name, param_value]
+                        response = f"*2\r\n${len(param_name)}\r\n{param_name}\r\n${len(param_value)}\r\n{param_value}\r\n".encode()
+                        client.sendall(response)
+                    else:
+                        # Unknown configuration parameter
+                        client.sendall(b"*0\r\n")  # Empty array for unknown config
+                else:
+                    # Wrong subcommand or arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'config' command\r\n")
             else:
                 # Unknown command
                 client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())
@@ -134,7 +155,23 @@ def handle_command(client: socket.socket):
             client.sendall(b"-ERR protocol error\r\n")
 
 
+def parse_arguments():
+    """Parse command line arguments for dir and dbfilename."""
+    args = sys.argv[1:]  # Skip the script name
+    i = 0
+    while i < len(args):
+        if args[i] == '--dir' and i + 1 < len(args):
+            config['dir'] = args[i + 1]
+            i += 2
+        elif args[i] == '--dbfilename' and i + 1 < len(args):
+            config['dbfilename'] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+
+
 def main():
+    parse_arguments()
     server_socket = socket.create_server(("localhost", 6379))
     while True:
         client_socket, client_addr = server_socket.accept()

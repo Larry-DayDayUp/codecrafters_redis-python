@@ -1,10 +1,12 @@
 import socket  # noqa: F401
 import threading
+import time
 
 BUF_SIZE = 4096
 
-# Global data store for key-value pairs
+# Global data store for key-value pairs and expiration times
 data_store = {}
+expiry_store = {}  # key -> expiration timestamp in seconds
 data_store_lock = threading.Lock()
 
 
@@ -28,6 +30,21 @@ def parse_resp(data: bytes):
         line_idx += 1
     
     return elements
+
+
+def is_key_expired(key):
+    """Check if a key has expired."""
+    if key not in expiry_store:
+        return False
+    return time.time() > expiry_store[key]
+
+
+def cleanup_expired_key(key):
+    """Remove expired key from both stores."""
+    if key in data_store:
+        del data_store[key]
+    if key in expiry_store:
+        del expiry_store[key]
 
 
 def handle_command(client: socket.socket):
@@ -60,9 +77,26 @@ def handle_command(client: socket.socket):
                 if len(command_parts) >= 3:
                     key = command_parts[1]
                     value = command_parts[2]
+                    
+                    # Check for PX argument (expiry in milliseconds)
+                    expiry_time = None
+                    if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
+                        try:
+                            expiry_ms = int(command_parts[4])
+                            expiry_time = time.time() + (expiry_ms / 1000.0)  # Convert to seconds
+                        except ValueError:
+                            client.sendall(b"-ERR value is not an integer or out of range\r\n")
+                            continue
+                    
                     # Store the key-value pair
                     with data_store_lock:
                         data_store[key] = value
+                        if expiry_time:
+                            expiry_store[key] = expiry_time
+                        elif key in expiry_store:
+                            # Remove any existing expiry if setting without PX
+                            del expiry_store[key]
+                    
                     # Return OK as RESP simple string
                     client.sendall(b"+OK\r\n")
                 else:
@@ -71,16 +105,22 @@ def handle_command(client: socket.socket):
             elif command == "GET":
                 if len(command_parts) >= 2:
                     key = command_parts[1]
-                    # Retrieve the value
+                    
+                    # Check and retrieve the value
                     with data_store_lock:
-                        value = data_store.get(key)
+                        # Check if key has expired
+                        if is_key_expired(key):
+                            cleanup_expired_key(key)
+                            value = None
+                        else:
+                            value = data_store.get(key)
                     
                     if value is not None:
                         # Return as RESP bulk string: $<length>\r\n<string>\r\n
                         response = f"${len(value)}\r\n{value}\r\n".encode()
                         client.sendall(response)
                     else:
-                        # Key doesn't exist, return null bulk string
+                        # Key doesn't exist or has expired, return null bulk string
                         client.sendall(b"$-1\r\n")
                 else:
                     # Wrong number of arguments

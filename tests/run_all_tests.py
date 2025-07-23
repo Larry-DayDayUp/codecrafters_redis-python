@@ -54,7 +54,7 @@ def run_all_tests():
         print("-" * 22)
         print("Running RDB test...")
         result = subprocess.run([sys.executable, "tests/test_rdb.py"], 
-                              capture_output=True, text=True)
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ RDB test passed")
         else:
@@ -90,7 +90,9 @@ if __name__ == "__main__":
         print("Starting Redis server...")
         server_process = subprocess.Popen(
             ["python", "app/main.py"],
-            cwd="c:\\Users\\33233\\Desktop\\CodeCrafter\\codecrafters-redis-python"
+            cwd="c:\\Users\\33233\\Desktop\\CodeCrafter\\codecrafters-redis-python",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
         )
         time.sleep(2)  # Give server time to start
         

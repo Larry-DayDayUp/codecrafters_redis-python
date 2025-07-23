@@ -1,11 +1,73 @@
 [![progress-banner](https://backend.codecrafters.io/progress/redis/8979aa7a-341e-4816-8065-6fb22e30dccb)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
-This is a starting point for Python solutions to the
-["Build Your Own Redis" Challenge](https://codecrafters.io/challenges/redis).
+# Redis Server Implementation
 
-In this challenge, you'll build a toy Redis clone that's capable of handling
-basic commands like `PING`, `SET` and `GET`. Along the way we'll learn about
-event loops, the Redis protocol and more.
+🚀 A Redis server implementation built for the [CodeCrafters Redis Challenge](https://codecrafters.io/challenges/redis).
+
+This is a Python solution to the "Build Your Own Redis" Challenge. In this challenge, I built a Redis clone capable of handling basic commands like `PING`, `SET`, `GET`, and more advanced features like key expiration and concurrent client handling.
+
+## ✅ Implemented Features
+
+### Core Commands
+- **PING** - Basic connectivity test  
+- **ECHO** - Echo back messages
+- **SET** - Store key-value pairs (with optional PX expiry)
+- **GET** - Retrieve values by key
+- **CONFIG GET** - Retrieve server configuration
+
+### Advanced Features  
+- **🔄 Concurrent Client Support** - Multi-threaded client handling
+- **⏰ Key Expiration** - TTL support with millisecond precision
+- **⚙️ Configuration Management** - Command-line arguments for dir/dbfilename
+- **🗂️ RDB File Config** - Redis Database file configuration support
+
+## 🏗️ Project Structure
+
+```
+codecrafters-redis-python/
+├── app/
+│   └── main.py              # Main Redis server implementation
+├── tests/
+│   ├── test_basic.py        # Basic command tests
+│   ├── test_storage.py      # SET/GET tests  
+│   ├── test_expiry.py       # Key expiration tests
+│   ├── test_config.py       # Configuration tests
+│   └── run_all_tests.py     # Complete test runner
+├── push_both.ps1            # Script to push to both repos
+└── README.md
+```
+
+## 🚀 Quick Start
+
+### Start the Redis Server
+```bash
+python app/main.py --dir /tmp/redis-data --dbfilename dump.rdb
+```
+
+### Test with Redis CLI  
+```bash
+redis-cli PING
+redis-cli SET mykey myvalue
+redis-cli GET mykey
+redis-cli SET tempkey tempvalue PX 5000  # Expires in 5 seconds
+redis-cli CONFIG GET dir
+```
+
+### Run Comprehensive Tests
+```bash
+python tests/run_all_tests.py
+```
+
+## 📊 CodeCrafters Progress
+
+- ✅ Stage #JM1: Bind to a port
+- ✅ Stage #RG2: Respond to PING
+- ✅ Stage #WY1: Respond to multiple PINGs  
+- ✅ Stage #ZU2: Handle concurrent clients
+- ✅ Stage #QQ0: Implement the ECHO command
+- ✅ Stage #LA7: Implement the SET & GET commands
+- ✅ Stage #YZ1: Key expiration (Expiry)
+- ✅ Stage #ZG5: RDB file configuration
 
 **Note**: If you're viewing this repo on GitHub, head over to
 [codecrafters.io](https://codecrafters.io) to try the challenge.

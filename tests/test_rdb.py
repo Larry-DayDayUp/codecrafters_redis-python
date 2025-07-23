@@ -43,18 +43,16 @@ def test_rdb_loading():
         
         # Start the server with our test RDB file
         process = subprocess.Popen(
-            ["python", "app/main.py", "--dir", temp_dir, "--dbfilename", "test.rdb"],
+            ["python", "app/main.py", "--dir", temp_dir, "--dbfilename", "test.rdb", "--port", "6391"],
             cwd="c:\\Users\\33233\\Desktop\\CodeCrafter\\codecrafters-redis-python"
         )
-        
-        time.sleep(2)  # Give server time to start and load RDB
         
         time.sleep(2)  # Give server time to start and load RDB
         
         try:
             # Connect and test KEYS command
             client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_socket.connect(("localhost", 6379))
+            client_socket.connect(("localhost", 6391))
             
             # Test KEYS * - should return the key from RDB file
             client_socket.send(b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n")

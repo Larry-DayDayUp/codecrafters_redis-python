@@ -15,7 +15,8 @@ data_store_lock = threading.Lock()
 # Configuration parameters
 config = {
     'dir': '/tmp/redis-data',
-    'dbfilename': 'dump.rdb'
+    'dbfilename': 'dump.rdb',
+    'port': 6379
 }
 
 
@@ -357,7 +358,7 @@ def handle_command(client: socket.socket):
 
 
 def parse_arguments():
-    """Parse command line arguments for dir and dbfilename."""
+    """Parse command line arguments for dir, dbfilename, and port."""
     args = sys.argv[1:]  # Skip the script name
     i = 0
     while i < len(args):
@@ -366,6 +367,13 @@ def parse_arguments():
             i += 2
         elif args[i] == '--dbfilename' and i + 1 < len(args):
             config['dbfilename'] = args[i + 1]
+            i += 2
+        elif args[i] == '--port' and i + 1 < len(args):
+            try:
+                config['port'] = int(args[i + 1])
+            except ValueError:
+                print(f"Error: Invalid port number '{args[i + 1]}'")
+                sys.exit(1)
             i += 2
         else:
             i += 1
@@ -378,7 +386,9 @@ def main():
     rdb_path = os.path.join(config['dir'], config['dbfilename'])
     parse_rdb_file(rdb_path)
     
-    server_socket = socket.create_server(("localhost", 6379))
+    port = config['port']
+    print(f"Starting Redis server on port {port}...")
+    server_socket = socket.create_server(("localhost", port))
     while True:
         client_socket, client_addr = server_socket.accept()
         threading.Thread(target=handle_command, args=(client_socket,)).start()

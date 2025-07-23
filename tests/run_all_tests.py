@@ -62,6 +62,19 @@ def run_all_tests():
             print(f"Error: {result.stderr}")
             raise Exception("RDB test failed")
         
+        # Test 6: Port Configuration
+        print("\n📋 TEST 6: Port Configuration")
+        print("-" * 30)
+        print("Running port configuration test...")
+        result = subprocess.run([sys.executable, "tests/test_port_config.py"], 
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        if result.returncode == 0:
+            print("✓ Port configuration test passed")
+        else:
+            print("❌ Port configuration test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("Port configuration test failed")
+        
         # Summary
         print("\n" + "=" * 50)
         print("✅ All tests completed successfully!")

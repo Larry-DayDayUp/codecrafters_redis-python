@@ -3,6 +3,10 @@ import threading
 
 BUF_SIZE = 4096
 
+# Global data store for key-value pairs
+data_store = {}
+data_store_lock = threading.Lock()
+
 
 def parse_resp(data: bytes):
     """Parse RESP (Redis Serialization Protocol) format."""
@@ -52,6 +56,35 @@ def handle_command(client: socket.socket):
                 else:
                     # No argument provided
                     client.sendall(b"-ERR wrong number of arguments for 'echo' command\r\n")
+            elif command == "SET":
+                if len(command_parts) >= 3:
+                    key = command_parts[1]
+                    value = command_parts[2]
+                    # Store the key-value pair
+                    with data_store_lock:
+                        data_store[key] = value
+                    # Return OK as RESP simple string
+                    client.sendall(b"+OK\r\n")
+                else:
+                    # Wrong number of arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
+            elif command == "GET":
+                if len(command_parts) >= 2:
+                    key = command_parts[1]
+                    # Retrieve the value
+                    with data_store_lock:
+                        value = data_store.get(key)
+                    
+                    if value is not None:
+                        # Return as RESP bulk string: $<length>\r\n<string>\r\n
+                        response = f"${len(value)}\r\n{value}\r\n".encode()
+                        client.sendall(response)
+                    else:
+                        # Key doesn't exist, return null bulk string
+                        client.sendall(b"$-1\r\n")
+                else:
+                    # Wrong number of arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
             else:
                 # Unknown command
                 client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())

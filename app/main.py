@@ -16,7 +16,8 @@ data_store_lock = threading.Lock()
 config = {
     'dir': '/tmp/redis-data',
     'dbfilename': 'dump.rdb',
-    'port': 6379
+    'port': 6379,
+    'replicaof': None  # None for master, (host, port) tuple for replica
 }
 
 
@@ -353,7 +354,8 @@ def handle_command(client: socket.socket):
                     section = command_parts[1].lower()
                     if section == "replication":
                         # Return replication info as bulk string
-                        info_content = "role:master"
+                        role = "slave" if config['replicaof'] is not None else "master"
+                        info_content = f"role:{role}"
                         response = f"${len(info_content)}\r\n{info_content}\r\n"
                         client.sendall(response.encode())
                     else:
@@ -361,7 +363,8 @@ def handle_command(client: socket.socket):
                         client.sendall(b"$0\r\n\r\n")
                 else:
                     # No section specified, return all sections (for now just replication)
-                    info_content = "role:master"
+                    role = "slave" if config['replicaof'] is not None else "master"
+                    info_content = f"role:{role}"
                     response = f"${len(info_content)}\r\n{info_content}\r\n"
                     client.sendall(response.encode())
             else:
@@ -374,7 +377,7 @@ def handle_command(client: socket.socket):
 
 
 def parse_arguments():
-    """Parse command line arguments for dir, dbfilename, and port."""
+    """Parse command line arguments for dir, dbfilename, port, and replicaof."""
     args = sys.argv[1:]  # Skip the script name
     i = 0
     while i < len(args):
@@ -389,6 +392,17 @@ def parse_arguments():
                 config['port'] = int(args[i + 1])
             except ValueError:
                 print(f"Error: Invalid port number '{args[i + 1]}'")
+                sys.exit(1)
+            i += 2
+        elif args[i] == '--replicaof' and i + 1 < len(args):
+            # Parse replicaof argument: "host port"
+            replicaof_arg = args[i + 1]
+            try:
+                host, port_str = replicaof_arg.split(' ', 1)
+                port = int(port_str)
+                config['replicaof'] = (host, port)
+            except (ValueError, IndexError):
+                print(f"Error: Invalid replicaof argument '{replicaof_arg}'. Expected format: 'host port'")
                 sys.exit(1)
             i += 2
         else:

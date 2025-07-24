@@ -53,6 +53,45 @@ def add_replica(client_socket):
         print(f"Added replica. Total replicas: {len(replicas)}")
 
 
+def handle_replica(client):
+    """Handle commands from a replica connection."""
+    try:
+        while True:
+            # Receive data from replica
+            data = client.recv(1024)
+            if not data:
+                break
+            
+            # Parse the command
+            command_parts = parse_resp(data)
+            if not command_parts:
+                continue
+                
+            command = command_parts[0].upper()
+            
+            if command == "REPLCONF" and len(command_parts) >= 3:
+                subcommand = command_parts[1].upper()
+                if subcommand == "ACK":
+                    # Handle ACK response from replica
+                    offset = int(command_parts[2])
+                    # Store this ACK (this will be processed by WAIT command)
+                    pass
+                # We don't need to respond to ACK commands
+                    
+    except Exception as e:
+        print(f"Error handling replica: {e}")
+    finally:
+        # Remove from replicas list when disconnected
+        with replicas_lock:
+            if client in replicas:
+                replicas.remove(client)
+                print(f"Removed replica. Total replicas: {len(replicas)}")
+        try:
+            client.close()
+        except:
+            pass
+
+
 def remove_replica(client_socket):
     """Remove a replica socket from the list of connected replicas."""
     with replicas_lock:
@@ -562,6 +601,10 @@ def handle_command(client: socket.socket):
                             
                             # Add this replica to our list for command propagation
                             add_replica(client)
+                            
+                            # Start handling replica-specific commands (break from main loop)
+                            handle_replica(client)
+                            return  # Exit this client handler
                         else:
                             # For now, only support full resync
                             client.sendall(b"-ERR partial resync not supported\r\n")

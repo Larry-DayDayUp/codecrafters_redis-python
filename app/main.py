@@ -348,6 +348,22 @@ def handle_command(client: socket.socket):
                 else:
                     # Wrong number of arguments
                     client.sendall(b"-ERR wrong number of arguments for 'keys' command\r\n")
+            elif command == "INFO":
+                if len(command_parts) >= 2:
+                    section = command_parts[1].lower()
+                    if section == "replication":
+                        # Return replication info as bulk string
+                        info_content = "role:master"
+                        response = f"${len(info_content)}\r\n{info_content}\r\n"
+                        client.sendall(response.encode())
+                    else:
+                        # Unsupported section, return empty bulk string
+                        client.sendall(b"$0\r\n\r\n")
+                else:
+                    # No section specified, return all sections (for now just replication)
+                    info_content = "role:master"
+                    response = f"${len(info_content)}\r\n{info_content}\r\n"
+                    client.sendall(response.encode())
             else:
                 # Unknown command
                 client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())

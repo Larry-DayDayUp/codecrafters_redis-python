@@ -75,6 +75,19 @@ def run_all_tests():
             print(f"Error: {result.stderr}")
             raise Exception("Port configuration test failed")
         
+        # Test 7: INFO Command
+        print("\n📋 TEST 7: INFO Command")
+        print("-" * 24)
+        print("Running INFO command test...")
+        result = subprocess.run([sys.executable, "tests/test_info_command.py"], 
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        if result.returncode == 0:
+            print("✓ INFO command test passed")
+        else:
+            print("❌ INFO command test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("INFO command test failed")
+        
         # Summary
         print("\n" + "=" * 50)
         print("✅ All tests completed successfully!")

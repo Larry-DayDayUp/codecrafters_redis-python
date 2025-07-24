@@ -389,7 +389,14 @@ def handle_command(client: socket.socket):
                         
                         # Propagate command to replicas BEFORE responding to client
                         if config['replicaof'] is None:  # Only masters propagate
-                            propagate_command_to_replicas(chunk)
+                            # Build proper RESP command to propagate
+                            if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
+                                # Include PX arguments
+                                resp_command = f"*5\r\n$3\r\nSET\r\n${len(key)}\r\n{key}\r\n${len(value)}\r\n{value}\r\n$2\r\nPX\r\n${len(command_parts[4])}\r\n{command_parts[4]}\r\n".encode()
+                            else:
+                                # Simple SET command
+                                resp_command = f"*3\r\n$3\r\nSET\r\n${len(key)}\r\n{key}\r\n${len(value)}\r\n{value}\r\n".encode()
+                            propagate_command_to_replicas(resp_command)
                         
                         # Return OK as RESP simple string
                         client.sendall(b"+OK\r\n")

@@ -53,7 +53,7 @@ def run_all_tests():
         print("\n📋 TEST 5: RDB Loading")
         print("-" * 22)
         print("Running RDB test...")
-        result = subprocess.run([sys.executable, "tests/test_rdb.py"], 
+        result = subprocess.run([sys.executable, "test_rdb.py"], 
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ RDB test passed")
@@ -66,7 +66,7 @@ def run_all_tests():
         print("\n📋 TEST 6: Port Configuration")
         print("-" * 30)
         print("Running port configuration test...")
-        result = subprocess.run([sys.executable, "tests/test_port_config.py"], 
+        result = subprocess.run([sys.executable, "test_port_config.py"], 
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ Port configuration test passed")
@@ -79,7 +79,7 @@ def run_all_tests():
         print("\n📋 TEST 7: INFO Command")
         print("-" * 24)
         print("Running INFO command test...")
-        result = subprocess.run([sys.executable, "tests/test_info_command.py"], 
+        result = subprocess.run([sys.executable, "test_info_command.py"], 
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ INFO command test passed")
@@ -87,6 +87,32 @@ def run_all_tests():
             print("❌ INFO command test failed")
             print(f"Error: {result.stderr}")
             raise Exception("INFO command test failed")
+        
+        # Test 8: Replicaof Flag
+        print("\n📋 TEST 8: Replicaof Flag")
+        print("-" * 26)
+        print("Running replicaof flag test...")
+        result = subprocess.run([sys.executable, "test_replicaof.py"], 
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        if result.returncode == 0:
+            print("✓ Replicaof flag test passed")
+        else:
+            print("❌ Replicaof flag test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("Replicaof flag test failed")
+        
+        # Test 9: RESP Format Validation
+        print("\n📋 TEST 9: RESP Format Validation")
+        print("-" * 34)
+        print("Running RESP format validation test...")
+        result = subprocess.run([sys.executable, "test_resp_format.py"], 
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        if result.returncode == 0:
+            print("✓ RESP format validation test passed")
+        else:
+            print("❌ RESP format validation test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("RESP format validation test failed")
         
         # Summary
         print("\n" + "=" * 50)

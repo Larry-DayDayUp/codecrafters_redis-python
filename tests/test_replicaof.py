@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Test script to verify --replicaof flag and INFO command work correctly."""
+"""
+Test script to verify --replicaof flag and INFO command work correctly.
+Tests both master and replica modes with proper RESP format validation.
+"""
 
 import socket
 import subprocess
 import time
 import sys
+import os
+
+# Add parent directory to path to import from app
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def send_command(host, port, command):
     """Send a Redis command and return the response."""

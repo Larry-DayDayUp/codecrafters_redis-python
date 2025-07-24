@@ -387,12 +387,12 @@ def handle_command(client: socket.socket):
                                 # Remove any existing expiry if setting without PX
                                 del expiry_store[key]
                         
-                        # Return OK as RESP simple string
-                        client.sendall(b"+OK\r\n")
-                        
-                        # Propagate command to replicas if this is a master
+                        # Propagate command to replicas BEFORE responding to client
                         if config['replicaof'] is None:  # Only masters propagate
                             propagate_command_to_replicas(chunk)
+                        
+                        # Return OK as RESP simple string
+                        client.sendall(b"+OK\r\n")
                     else:
                         # Wrong number of arguments
                         client.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")

@@ -729,6 +729,7 @@ def connect_to_master():
 
 def handle_master_commands(master_socket):
     """Handle commands received from master server."""
+    # Process commands and track offset properly
     buffer = b""
     rdb_received = False
     

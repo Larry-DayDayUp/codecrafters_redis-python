@@ -12,6 +12,12 @@ data_store = {}
 expiry_store = {}  # key -> expiration timestamp in seconds
 data_store_lock = threading.Lock()
 
+# Replication state
+replicas = []  # List of connected replica sockets
+replicas_lock = threading.Lock()
+pending_acks = {}  # offset -> list of replica sockets waiting for ACK
+pending_acks_lock = threading.Lock()
+
 # Configuration parameters
 config = {
     'dir': '/tmp/redis-data',
@@ -21,6 +27,65 @@ config = {
     'master_replid': '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb',  # 40 char replication ID
     'master_repl_offset': 0  # Replication offset, starts at 0
 }
+
+
+def create_empty_rdb():
+    """Create an empty RDB file content."""
+    # Empty RDB file: REDIS header + version + EOF
+    # This is a minimal valid RDB file with no data
+    rdb_content = b'REDIS0011'  # Header with version
+    rdb_content += b'\xfa'  # Auxiliary field marker
+    rdb_content += b'\x09redis-ver\x05'  # redis-ver key
+    rdb_content += b'7.2.0'  # version value
+    rdb_content += b'\xfa'  # Auxiliary field marker  
+    rdb_content += b'\x0aredis-bits\xc0@'  # redis-bits 64
+    rdb_content += b'\xfe\x00'  # Database selector DB 0
+    rdb_content += b'\xff'  # EOF marker
+    # Add checksum (8 bytes) - using zeros for simplicity
+    rdb_content += b'\x00\x00\x00\x00\x00\x00\x00\x00'
+    return rdb_content
+
+
+def add_replica(client_socket):
+    """Add a replica socket to the list of connected replicas."""
+    with replicas_lock:
+        replicas.append(client_socket)
+        print(f"Added replica. Total replicas: {len(replicas)}")
+
+
+def remove_replica(client_socket):
+    """Remove a replica socket from the list of connected replicas."""
+    with replicas_lock:
+        if client_socket in replicas:
+            replicas.remove(client_socket)
+            print(f"Removed replica. Total replicas: {len(replicas)}")
+
+
+def handle_replica_ack(client_socket, ack_offset):
+    """Handle ACK from replica - update pending ACKs."""
+    with pending_acks_lock:
+        # Find and notify any waiting WAIT commands
+        for offset, waiting_replicas in list(pending_acks.items()):
+            if ack_offset >= offset and client_socket in waiting_replicas:
+                waiting_replicas.remove(client_socket)
+                if not waiting_replicas:
+                    # All required replicas have ACKed
+                    del pending_acks[offset]
+
+
+def propagate_command_to_replicas(command_bytes):
+    """Send a command to all connected replicas."""
+    with replicas_lock:
+        for replica in replicas[:]:  # Create a copy to avoid modification during iteration
+            try:
+                replica.sendall(command_bytes)
+                # Update replication offset
+                config['master_repl_offset'] += len(command_bytes)
+            except Exception as e:
+                print(f"Error sending to replica: {e}")
+                # Remove disconnected replica
+                if replica in replicas:
+                    replicas.remove(replica)
 
 
 def parse_resp(data: bytes):
@@ -228,134 +293,155 @@ def parse_rdb_file(file_path):
 
 
 def handle_command(client: socket.socket):
-    while chunk := client.recv(BUF_SIZE):
-        if chunk == b"":
-            break
-        
-        # print(f"[CHUNK] ```\n{chunk.decode()}\n```")
-        
-        # Parse the Redis command
-        try:
-            command_parts = parse_resp(chunk)
-            if not command_parts:
-                continue
-                
-            command = command_parts[0].upper()
+    try:
+        while chunk := client.recv(BUF_SIZE):
+            if chunk == b"":
+                break
             
-            if command == "PING":
-                client.sendall(b"+PONG\r\n")
-            elif command == "ECHO":
-                if len(command_parts) > 1:
-                    echo_arg = command_parts[1]
-                    # Return as RESP bulk string: $<length>\r\n<string>\r\n
-                    response = f"${len(echo_arg)}\r\n{echo_arg}\r\n".encode()
-                    client.sendall(response)
-                else:
-                    # No argument provided
-                    client.sendall(b"-ERR wrong number of arguments for 'echo' command\r\n")
-            elif command == "SET":
-                if len(command_parts) >= 3:
-                    key = command_parts[1]
-                    value = command_parts[2]
+            # print(f"[CHUNK] ```\n{chunk.decode()}\n```")
+            
+            # Parse the Redis command
+            try:
+                command_parts = parse_resp(chunk)
+                if not command_parts:
+                    continue
                     
-                    # Check for PX argument (expiry in milliseconds)
-                    expiry_time = None
-                    if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
-                        try:
-                            expiry_ms = int(command_parts[4])
-                            expiry_time = time.time() + (expiry_ms / 1000.0)  # Convert to seconds
-                        except ValueError:
-                            client.sendall(b"-ERR value is not an integer or out of range\r\n")
-                            continue
-                    
-                    # Store the key-value pair
-                    with data_store_lock:
-                        data_store[key] = value
-                        if expiry_time:
-                            expiry_store[key] = expiry_time
-                        elif key in expiry_store:
-                            # Remove any existing expiry if setting without PX
-                            del expiry_store[key]
-                    
-                    # Return OK as RESP simple string
-                    client.sendall(b"+OK\r\n")
-                else:
-                    # Wrong number of arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
-            elif command == "GET":
-                if len(command_parts) >= 2:
-                    key = command_parts[1]
-                    
-                    # Check and retrieve the value
-                    with data_store_lock:
-                        # Check if key has expired
-                        if is_key_expired(key):
-                            cleanup_expired_key(key)
-                            value = None
-                        else:
-                            value = data_store.get(key)
-                    
-                    if value is not None:
+                command = command_parts[0].upper()
+                
+                if command == "PING":
+                    client.sendall(b"+PONG\r\n")
+                elif command == "ECHO":
+                    if len(command_parts) > 1:
+                        echo_arg = command_parts[1]
                         # Return as RESP bulk string: $<length>\r\n<string>\r\n
-                        response = f"${len(value)}\r\n{value}\r\n".encode()
+                        response = f"${len(echo_arg)}\r\n{echo_arg}\r\n".encode()
                         client.sendall(response)
                     else:
-                        # Key doesn't exist or has expired, return null bulk string
-                        client.sendall(b"$-1\r\n")
-                else:
-                    # Wrong number of arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
-            elif command == "CONFIG":
-                if len(command_parts) >= 3 and command_parts[1].upper() == "GET":
-                    param_name = command_parts[2].lower()
-                    if param_name in config:
-                        param_value = config[param_name]
-                        # Return as RESP array with 2 elements: [param_name, param_value]
-                        response = f"*2\r\n${len(param_name)}\r\n{param_name}\r\n${len(param_value)}\r\n{param_value}\r\n".encode()
-                        client.sendall(response)
+                        # No argument provided
+                        client.sendall(b"-ERR wrong number of arguments for 'echo' command\r\n")
+                elif command == "SET":
+                    if len(command_parts) >= 3:
+                        key = command_parts[1]
+                        value = command_parts[2]
+                        
+                        # Check for PX argument (expiry in milliseconds)
+                        expiry_time = None
+                        if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
+                            try:
+                                expiry_ms = int(command_parts[4])
+                                expiry_time = time.time() + (expiry_ms / 1000.0)  # Convert to seconds
+                            except ValueError:
+                                client.sendall(b"-ERR value is not an integer or out of range\r\n")
+                                continue
+                        
+                        # Store the key-value pair
+                        with data_store_lock:
+                            data_store[key] = value
+                            if expiry_time:
+                                expiry_store[key] = expiry_time
+                            elif key in expiry_store:
+                                # Remove any existing expiry if setting without PX
+                                del expiry_store[key]
+                        
+                        # Return OK as RESP simple string
+                        client.sendall(b"+OK\r\n")
+                        
+                        # Propagate command to replicas if this is a master
+                        if config['replicaof'] is None:  # Only masters propagate
+                            propagate_command_to_replicas(chunk)
                     else:
-                        # Unknown configuration parameter
-                        client.sendall(b"*0\r\n")  # Empty array for unknown config
-                else:
-                    # Wrong subcommand or arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'config' command\r\n")
-            elif command == "KEYS":
-                if len(command_parts) >= 2:
-                    pattern = command_parts[1]
-                    
-                    # Get all keys (for now, only support "*" pattern)
-                    with data_store_lock:
-                        # Clean up expired keys first
-                        expired_keys = []
-                        current_time = time.time()
-                        for key, expire_time in expiry_store.items():
-                            if current_time > expire_time:
-                                expired_keys.append(key)
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'set' command\r\n")
+                elif command == "GET":
+                    if len(command_parts) >= 2:
+                        key = command_parts[1]
                         
-                        for key in expired_keys:
-                            cleanup_expired_key(key)
+                        # Check and retrieve the value
+                        with data_store_lock:
+                            # Check if key has expired
+                            if is_key_expired(key):
+                                cleanup_expired_key(key)
+                                value = None
+                            else:
+                                value = data_store.get(key)
                         
-                        # Get remaining keys
-                        if pattern == "*":
-                            keys = list(data_store.keys())
+                        if value is not None:
+                            # Return as RESP bulk string: $<length>\r\n<string>\r\n
+                            response = f"${len(value)}\r\n{value}\r\n".encode()
+                            client.sendall(response)
                         else:
-                            # For now, only support "*" pattern
-                            keys = list(data_store.keys())
-                    
-                    # Return as RESP array
-                    response = f"*{len(keys)}\r\n"
-                    for key in keys:
-                        response += f"${len(key)}\r\n{key}\r\n"
-                    
-                    client.sendall(response.encode())
-                else:
-                    # Wrong number of arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'keys' command\r\n")
-            elif command == "INFO":
-                if len(command_parts) >= 2:
-                    section = command_parts[1].lower()
-                    if section == "replication":
-                        # Return replication info as bulk string
+                            # Key doesn't exist or has expired, return null bulk string
+                            client.sendall(b"$-1\r\n")
+                    else:
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'get' command\r\n")
+                elif command == "CONFIG":
+                    if len(command_parts) >= 3 and command_parts[1].upper() == "GET":
+                        param_name = command_parts[2].lower()
+                        if param_name in config:
+                            param_value = config[param_name]
+                            # Return as RESP array with 2 elements: [param_name, param_value]
+                            response = f"*2\r\n${len(param_name)}\r\n{param_name}\r\n${len(param_value)}\r\n{param_value}\r\n".encode()
+                            client.sendall(response)
+                        else:
+                            # Unknown configuration parameter
+                            client.sendall(b"*0\r\n")  # Empty array for unknown config
+                    else:
+                        # Wrong subcommand or arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'config' command\r\n")
+                elif command == "KEYS":
+                    if len(command_parts) >= 2:
+                        pattern = command_parts[1]
+                        
+                        # Get all keys (for now, only support "*" pattern)
+                        with data_store_lock:
+                            # Clean up expired keys first
+                            expired_keys = []
+                            current_time = time.time()
+                            for key, expire_time in expiry_store.items():
+                                if current_time > expire_time:
+                                    expired_keys.append(key)
+                            
+                            for key in expired_keys:
+                                cleanup_expired_key(key)
+                            
+                            # Get remaining keys
+                            if pattern == "*":
+                                keys = list(data_store.keys())
+                            else:
+                                # For now, only support "*" pattern
+                                keys = list(data_store.keys())
+                        
+                        # Return as RESP array
+                        response = f"*{len(keys)}\r\n"
+                        for key in keys:
+                            response += f"${len(key)}\r\n{key}\r\n"
+                        
+                        client.sendall(response.encode())
+                    else:
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'keys' command\r\n")
+                elif command == "INFO":
+                    if len(command_parts) >= 2:
+                        section = command_parts[1].lower()
+                        if section == "replication":
+                            # Return replication info as bulk string
+                            role = "slave" if config['replicaof'] is not None else "master"
+                            
+                            # Build replication info with role, replid, and offset
+                            if role == "master":
+                                info_content = f"role:{role}\r\nmaster_replid:{config['master_replid']}\r\nmaster_repl_offset:{config['master_repl_offset']}"
+                            else:
+                                # For slave, still include role (may add more slave-specific info later)
+                                info_content = f"role:{role}"
+                            
+                            response = f"${len(info_content)}\r\n{info_content}\r\n"
+                            client.sendall(response.encode())
+                        else:
+                            # Unsupported section, return empty bulk string
+                            client.sendall(b"$0\r\n\r\n")
+                    else:
+                        # No section specified, return all sections (for now just replication)
                         role = "slave" if config['replicaof'] is not None else "master"
                         
                         # Build replication info with role, replid, and offset
@@ -367,66 +453,153 @@ def handle_command(client: socket.socket):
                         
                         response = f"${len(info_content)}\r\n{info_content}\r\n"
                         client.sendall(response.encode())
+                elif command == "REPLCONF":
+                    # Handle REPLCONF command for replication configuration
+                    if len(command_parts) >= 3:
+                        subcommand = command_parts[1].lower()
+                        if subcommand == "listening-port":
+                            # Replica is notifying us of its listening port
+                            port = command_parts[2]
+                            # For now, just acknowledge with OK
+                            client.sendall(b"+OK\r\n")
+                        elif subcommand == "capa":
+                            # Replica is notifying us of its capabilities
+                            capability = command_parts[2]
+                            # For now, just acknowledge with OK
+                            client.sendall(b"+OK\r\n")
+                        elif subcommand == "ack":
+                            # Replica is acknowledging replication offset
+                            if len(command_parts) >= 3:
+                                ack_offset = int(command_parts[2])
+                                # Handle ACK - this is typically used by WAIT command
+                                handle_replica_ack(client, ack_offset)
+                            client.sendall(b"+OK\r\n")
+                        elif subcommand == "getack":
+                            # Master is requesting ACK from replica
+                            if config['replicaof'] is not None:  # We are a replica
+                                # Send our current offset back to master
+                                current_offset = config.get('replica_offset', 0)
+                                ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                                client.sendall(ack_response.encode())
+                        else:
+                            # Unknown REPLCONF subcommand
+                            client.sendall(b"-ERR unknown REPLCONF subcommand\r\n")
                     else:
-                        # Unsupported section, return empty bulk string
-                        client.sendall(b"$0\r\n\r\n")
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'replconf' command\r\n")
+                elif command == "PSYNC":
+                    # Handle PSYNC command for replication synchronization
+                    if len(command_parts) >= 3:
+                        repl_id = command_parts[1]
+                        offset = command_parts[2]
+                        
+                        # For full resynchronization (first time connecting)
+                        if repl_id == "?" and offset == "-1":
+                            # Send FULLRESYNC response with our replication ID and offset
+                            response = f"+FULLRESYNC {config['master_replid']} {config['master_repl_offset']}\r\n"
+                            client.sendall(response.encode())
+                            
+                            # Send empty RDB file
+                            empty_rdb = create_empty_rdb()
+                            rdb_response = f"${len(empty_rdb)}\r\n".encode() + empty_rdb
+                            client.sendall(rdb_response)
+                            
+                            # Add this replica to our list for command propagation
+                            add_replica(client)
+                        else:
+                            # For now, only support full resync
+                            client.sendall(b"-ERR partial resync not supported\r\n")
+                    else:
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
+                elif command == "WAIT":
+                    # Handle WAIT command for replication synchronization
+                    if len(command_parts) >= 3:
+                        try:
+                            num_replicas = int(command_parts[1])
+                            timeout_ms = int(command_parts[2])
+                            
+                            # If no replicas are required, return immediately
+                            if num_replicas == 0:
+                                client.sendall(b":0\r\n")
+                            else:
+                                # Check current number of replicas
+                                with replicas_lock:
+                                    current_replica_count = len(replicas)
+                                
+                                # If we have no replicas, return 0
+                                if current_replica_count == 0:
+                                    client.sendall(b":0\r\n")
+                                # If no commands have been sent (offset is 0), all replicas are up to date
+                                elif config['master_repl_offset'] == 0:
+                                    acked_count = min(num_replicas, current_replica_count)
+                                    response = f":{acked_count}\r\n"
+                                    client.sendall(response.encode())
+                                else:
+                                    # Send GETACK to all replicas and wait for responses
+                                    getack_command = b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+                                    
+                                    # Track which replicas we're waiting for
+                                    current_offset = config['master_repl_offset']
+                                    waiting_replicas = []
+                                    
+                                    with replicas_lock:
+                                        for replica in replicas[:min(num_replicas, len(replicas))]:
+                                            try:
+                                                replica.sendall(getack_command)
+                                                waiting_replicas.append(replica)
+                                            except Exception:
+                                                pass  # Skip disconnected replicas
+                                    
+                                    if not waiting_replicas:
+                                        client.sendall(b":0\r\n")
+                                    else:
+                                        # Store the pending ACK request
+                                        with pending_acks_lock:
+                                            pending_acks[current_offset] = waiting_replicas[:]
+                                        
+                                        # Wait for ACKs with timeout
+                                        start_time = time.time()
+                                        timeout_seconds = timeout_ms / 1000.0
+                                        
+                                        while time.time() - start_time < timeout_seconds:
+                                            with pending_acks_lock:
+                                                remaining = pending_acks.get(current_offset, [])
+                                                if not remaining:
+                                                    # All required replicas have ACKed
+                                                    acked_count = len(waiting_replicas)
+                                                    break
+                                            time.sleep(0.001)  # Small sleep to avoid busy waiting
+                                        else:
+                                            # Timeout reached
+                                            with pending_acks_lock:
+                                                remaining = pending_acks.get(current_offset, [])
+                                                acked_count = len(waiting_replicas) - len(remaining)
+                                                if current_offset in pending_acks:
+                                                    del pending_acks[current_offset]
+                                        
+                                        response = f":{acked_count}\r\n"
+                                        client.sendall(response.encode())
+                        except ValueError:
+                            client.sendall(b"-ERR invalid number format\r\n")
+                    else:
+                        # Wrong number of arguments
+                        client.sendall(b"-ERR wrong number of arguments for 'wait' command\r\n")
                 else:
-                    # No section specified, return all sections (for now just replication)
-                    role = "slave" if config['replicaof'] is not None else "master"
+                    # Unknown command
+                    client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())
                     
-                    # Build replication info with role, replid, and offset
-                    if role == "master":
-                        info_content = f"role:{role}\r\nmaster_replid:{config['master_replid']}\r\nmaster_repl_offset:{config['master_repl_offset']}"
-                    else:
-                        # For slave, still include role (may add more slave-specific info later)
-                        info_content = f"role:{role}"
-                    
-                    response = f"${len(info_content)}\r\n{info_content}\r\n"
-                    client.sendall(response.encode())
-            elif command == "REPLCONF":
-                # Handle REPLCONF command for replication configuration
-                if len(command_parts) >= 3:
-                    subcommand = command_parts[1].lower()
-                    if subcommand == "listening-port":
-                        # Replica is notifying us of its listening port
-                        port = command_parts[2]
-                        # For now, just acknowledge with OK
-                        client.sendall(b"+OK\r\n")
-                    elif subcommand == "capa":
-                        # Replica is notifying us of its capabilities
-                        capability = command_parts[2]
-                        # For now, just acknowledge with OK
-                        client.sendall(b"+OK\r\n")
-                    else:
-                        # Unknown REPLCONF subcommand
-                        client.sendall(b"-ERR unknown REPLCONF subcommand\r\n")
-                else:
-                    # Wrong number of arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'replconf' command\r\n")
-            elif command == "PSYNC":
-                # Handle PSYNC command for replication synchronization
-                if len(command_parts) >= 3:
-                    repl_id = command_parts[1]
-                    offset = command_parts[2]
-                    
-                    # For full resynchronization (first time connecting)
-                    if repl_id == "?" and offset == "-1":
-                        # Send FULLRESYNC response with our replication ID and offset
-                        response = f"+FULLRESYNC {config['master_replid']} {config['master_repl_offset']}\r\n"
-                        client.sendall(response.encode())
-                    else:
-                        # For now, only support full resync
-                        client.sendall(b"-ERR partial resync not supported\r\n")
-                else:
-                    # Wrong number of arguments
-                    client.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
-            else:
-                # Unknown command
-                client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())
-                
-        except Exception as e:
-            # print(f"Error parsing command: {e}")
-            client.sendall(b"-ERR protocol error\r\n")
+            except Exception as e:
+                # print(f"Error parsing command: {e}")
+                client.sendall(b"-ERR protocol error\r\n")
+    except ConnectionResetError:
+        # Client disconnected
+        remove_replica(client)
+    except Exception as e:
+        print(f"Error in handle_command: {e}")
+    finally:
+        # Always remove from replicas list when connection closes
+        remove_replica(client)
 
 
 def parse_arguments():
@@ -497,14 +670,67 @@ def connect_to_master():
         # Step 4: Send PSYNC ? -1
         psync_command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
         master_socket.send(psync_command)
-        response = master_socket.recv(1024)
-        print(f"PSYNC response: {response}")
+        response = master_socket.recv(4096)  # Larger buffer for RDB data
+        print(f"PSYNC response: {response[:100]}...")  # Only show first 100 bytes
         
-        # Keep connection alive (in a real implementation, we'd handle replication data here)
-        # For now, we'll just keep the socket open
+        # Initialize replica offset
+        config['replica_offset'] = 0
+        
+        # Start listening for commands from master
+        threading.Thread(target=handle_master_commands, args=(master_socket,), daemon=True).start()
         
     except Exception as e:
         print(f"Error connecting to master: {e}")
+
+
+def handle_master_commands(master_socket):
+    """Handle commands received from master server."""
+    try:
+        while True:
+            data = master_socket.recv(4096)
+            if not data:
+                break
+            
+            # Parse and execute commands from master
+            command_parts = parse_resp(data)
+            if command_parts:
+                command = command_parts[0].upper()
+                
+                if command == "REPLCONF" and len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
+                    # Master is requesting ACK - send our current offset
+                    current_offset = config.get('replica_offset', 0)
+                    ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                    master_socket.sendall(ack_response.encode())
+                elif command == "SET":
+                    # Execute SET command from master
+                    if len(command_parts) >= 3:
+                        key = command_parts[1]
+                        value = command_parts[2]
+                        
+                        # Handle PX argument if present
+                        expiry_time = None
+                        if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
+                            try:
+                                expiry_ms = int(command_parts[4])
+                                expiry_time = time.time() + (expiry_ms / 1000.0)
+                            except ValueError:
+                                pass
+                        
+                        # Store the key-value pair
+                        with data_store_lock:
+                            data_store[key] = value
+                            if expiry_time:
+                                expiry_store[key] = expiry_time
+                            elif key in expiry_store:
+                                del expiry_store[key]
+                    
+                    # Update replica offset
+                    config['replica_offset'] += len(data)
+                
+    except Exception as e:
+        print(f"Error handling master commands: {e}")
+    finally:
+        master_socket.close()
 
 
 def main():

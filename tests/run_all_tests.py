@@ -54,6 +54,7 @@ def run_all_tests():
         print("-" * 22)
         print("Running RDB test...")
         result = subprocess.run([sys.executable, "test_rdb.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ RDB test passed")
@@ -67,6 +68,7 @@ def run_all_tests():
         print("-" * 30)
         print("Running port configuration test...")
         result = subprocess.run([sys.executable, "test_port_config.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ Port configuration test passed")
@@ -80,6 +82,7 @@ def run_all_tests():
         print("-" * 24)
         print("Running INFO command test...")
         result = subprocess.run([sys.executable, "test_info_command.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ INFO command test passed")
@@ -93,6 +96,7 @@ def run_all_tests():
         print("-" * 26)
         print("Running replicaof flag test...")
         result = subprocess.run([sys.executable, "test_replicaof.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ Replicaof flag test passed")
@@ -106,6 +110,7 @@ def run_all_tests():
         print("-" * 34)
         print("Running RESP format validation test...")
         result = subprocess.run([sys.executable, "test_resp_format.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
                               capture_output=True, text=True, encoding='utf-8', errors='ignore')
         if result.returncode == 0:
             print("✓ RESP format validation test passed")

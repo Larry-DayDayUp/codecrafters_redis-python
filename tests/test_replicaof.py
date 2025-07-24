@@ -32,9 +32,7 @@ def test_master_mode():
     
     # Start server in master mode on port 6380
     process = subprocess.Popen([
-        sys.executable, "-c", 
-        "import sys; sys.path.insert(0, 'app'); from main import main; main()",
-        "--port", "6380"
+        sys.executable, "../app/main.py", "--port", "6380"
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     time.sleep(1)  # Give server time to start
@@ -61,9 +59,7 @@ def test_replica_mode():
     
     # Start server in replica mode on port 6381
     process = subprocess.Popen([
-        sys.executable, "-c", 
-        "import sys; sys.path.insert(0, 'app'); from main import main; main()",
-        "--port", "6381", "--replicaof", "localhost 6379"
+        sys.executable, "../app/main.py", "--port", "6381", "--replicaof", "localhost 6379"
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     time.sleep(1)  # Give server time to start
@@ -90,9 +86,7 @@ def test_info_without_section():
     
     # Start server in replica mode on port 6382
     process = subprocess.Popen([
-        sys.executable, "-c", 
-        "import sys; sys.path.insert(0, 'app'); from main import main; main()",
-        "--port", "6382", "--replicaof", "localhost 6379"
+        sys.executable, "../app/main.py", "--port", "6382", "--replicaof", "localhost 6379"
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     
     time.sleep(1)  # Give server time to start

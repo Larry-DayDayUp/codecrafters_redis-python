@@ -581,7 +581,8 @@ def handle_command(client: socket.socket):
                                     client.sendall(b":0\r\n")
                                 # If no commands have been sent (offset is 0), all replicas are up to date
                                 elif config['master_repl_offset'] == 0:
-                                    acked_count = min(num_replicas, current_replica_count)
+                                    # Return the actual number of connected replicas, not limited by num_replicas
+                                    acked_count = current_replica_count
                                     response = f":{acked_count}\r\n"
                                     client.sendall(response.encode())
                                 else:
@@ -593,7 +594,8 @@ def handle_command(client: socket.socket):
                                     waiting_replicas = []
                                     
                                     with replicas_lock:
-                                        for replica in replicas[:min(num_replicas, len(replicas))]:
+                                        # Send GETACK to ALL replicas, not limited by num_replicas
+                                        for replica in replicas[:]:
                                             try:
                                                 replica.sendall(getack_command)
                                                 waiting_replicas.append(replica)
@@ -614,18 +616,19 @@ def handle_command(client: socket.socket):
                                         while time.time() - start_time < timeout_seconds:
                                             with pending_acks_lock:
                                                 remaining = pending_acks.get(current_offset, [])
-                                                if not remaining:
-                                                    # All required replicas have ACKed
-                                                    acked_count = len(waiting_replicas)
+                                                acked_count = len(waiting_replicas) - len(remaining)
+                                                
+                                                # Break if we have enough ACKs or all replicas have responded
+                                                if acked_count >= num_replicas or not remaining:
                                                     break
                                             time.sleep(0.001)  # Small sleep to avoid busy waiting
-                                        else:
-                                            # Timeout reached
-                                            with pending_acks_lock:
-                                                remaining = pending_acks.get(current_offset, [])
-                                                acked_count = len(waiting_replicas) - len(remaining)
-                                                if current_offset in pending_acks:
-                                                    del pending_acks[current_offset]
+                                        
+                                        # Calculate final acked count
+                                        with pending_acks_lock:
+                                            remaining = pending_acks.get(current_offset, [])
+                                            acked_count = len(waiting_replicas) - len(remaining)
+                                            if current_offset in pending_acks:
+                                                del pending_acks[current_offset]
                                         
                                         response = f":{acked_count}\r\n"
                                         client.sendall(response.encode())

@@ -525,6 +525,10 @@ def handle_command(client: socket.socket):
                                 current_offset = config.get('replica_offset', 0)
                                 ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
                                 client.sendall(ack_response.encode())
+                                # GETACK command itself should increment offset after responding
+                                # Calculate the byte length of the GETACK command
+                                getack_bytes = len(chunk)
+                                config['replica_offset'] = config.get('replica_offset', 0) + getack_bytes
                         else:
                             # Unknown REPLCONF subcommand
                             client.sendall(b"-ERR unknown REPLCONF subcommand\r\n")

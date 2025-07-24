@@ -119,6 +119,20 @@ def run_all_tests():
             print(f"Error: {result.stderr}")
             raise Exception("RESP format validation test failed")
         
+        # Test 10: Master Replication Info
+        print("\n📋 TEST 10: Master Replication Info")
+        print("-" * 36)
+        print("Running master replication info test...")
+        result = subprocess.run([sys.executable, "test_master_replication_info.py"], 
+                              cwd=os.path.dirname(os.path.abspath(__file__)),
+                              capture_output=True, text=True, encoding='utf-8', errors='ignore')
+        if result.returncode == 0:
+            print("✓ Master replication info test passed")
+        else:
+            print("❌ Master replication info test failed")
+            print(f"Error: {result.stderr}")
+            raise Exception("Master replication info test failed")
+        
         # Summary
         print("\n" + "=" * 50)
         print("✅ All tests completed successfully!")

@@ -75,8 +75,12 @@ def test_info_command_master_resp_format():
         print(f"Raw response: {repr(response)}")
         print(f"Decoded response: {response.decode()}")
         
-        # Check expected format: $11\r\nrole:master\r\n
-        expected = b"$11\r\nrole:master\r\n"
+        # Check expected format: updated to include master details
+        # Expected format: $89\r\nrole:master\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0\r\n
+        expected_content = "role:master\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0"
+        expected_length = len(expected_content)
+        expected = f"${expected_length}\r\n{expected_content}\r\n".encode()
+        
         if response == expected:
             print("✓ Exact RESP format test PASSED")
             return True

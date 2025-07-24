@@ -17,7 +17,9 @@ config = {
     'dir': '/tmp/redis-data',
     'dbfilename': 'dump.rdb',
     'port': 6379,
-    'replicaof': None  # None for master, (host, port) tuple for replica
+    'replicaof': None,  # None for master, (host, port) tuple for replica
+    'master_replid': '8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb',  # 40 char replication ID
+    'master_repl_offset': 0  # Replication offset, starts at 0
 }
 
 
@@ -355,7 +357,14 @@ def handle_command(client: socket.socket):
                     if section == "replication":
                         # Return replication info as bulk string
                         role = "slave" if config['replicaof'] is not None else "master"
-                        info_content = f"role:{role}"
+                        
+                        # Build replication info with role, replid, and offset
+                        if role == "master":
+                            info_content = f"role:{role}\r\nmaster_replid:{config['master_replid']}\r\nmaster_repl_offset:{config['master_repl_offset']}"
+                        else:
+                            # For slave, still include role (may add more slave-specific info later)
+                            info_content = f"role:{role}"
+                        
                         response = f"${len(info_content)}\r\n{info_content}\r\n"
                         client.sendall(response.encode())
                     else:
@@ -364,7 +373,14 @@ def handle_command(client: socket.socket):
                 else:
                     # No section specified, return all sections (for now just replication)
                     role = "slave" if config['replicaof'] is not None else "master"
-                    info_content = f"role:{role}"
+                    
+                    # Build replication info with role, replid, and offset
+                    if role == "master":
+                        info_content = f"role:{role}\r\nmaster_replid:{config['master_replid']}\r\nmaster_repl_offset:{config['master_repl_offset']}"
+                    else:
+                        # For slave, still include role (may add more slave-specific info later)
+                        info_content = f"role:{role}"
+                    
                     response = f"${len(info_content)}\r\n{info_content}\r\n"
                     client.sendall(response.encode())
             else:

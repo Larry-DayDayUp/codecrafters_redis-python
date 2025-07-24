@@ -74,8 +74,15 @@ def handle_replica(client):
                 if subcommand == "ACK":
                     # Handle ACK response from replica
                     offset = int(command_parts[2])
-                    # Store this ACK (this will be processed by WAIT command)
-                    pass
+                    
+                    # Process this ACK for any pending WAIT commands
+                    with pending_acks_lock:
+                        for pending_offset in list(pending_acks.keys()):
+                            waiting_list = pending_acks[pending_offset]
+                            if client in waiting_list:
+                                # Remove this replica from waiting list
+                                waiting_list.remove(client)
+                                break
                 # We don't need to respond to ACK commands
                     
     except Exception as e:

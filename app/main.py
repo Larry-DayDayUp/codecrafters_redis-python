@@ -790,9 +790,13 @@ def handle_master_commands(master_socket):
                             # Master is requesting ACK - send our current offset
                             current_offset = config.get('replica_offset', 0)
                             ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
-                            master_socket.sendall(ack_response.encode())
-                            # GETACK command itself DOES count towards offset for future commands
-                            config['replica_offset'] += consumed_bytes
+                            try:
+                                master_socket.sendall(ack_response.encode())
+                                # GETACK command itself DOES count towards offset for future commands
+                                config['replica_offset'] += consumed_bytes
+                            except Exception as e:
+                                print(f"Error sending ACK: {e}")
+                                break
                         else:
                             # Other REPLCONF commands (not GETACK) should increment offset
                             config['replica_offset'] += consumed_bytes

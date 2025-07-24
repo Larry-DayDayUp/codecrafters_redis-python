@@ -523,7 +523,8 @@ def handle_command(client: socket.socket):
                             if config['replicaof'] is not None:  # We are a replica
                                 # Send our current offset back to master
                                 current_offset = config.get('replica_offset', 0)
-                                ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                                offset_str = str(current_offset)
+                                ack_response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$" + str(len(offset_str)) + "\r\n" + offset_str + "\r\n"
                                 client.sendall(ack_response.encode())
                                 # GETACK command itself should increment offset after responding
                                 # Calculate the byte length of the GETACK command
@@ -789,7 +790,8 @@ def handle_master_commands(master_socket):
                         if len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
                             # Master is requesting ACK - send our current offset
                             current_offset = config.get('replica_offset', 0)
-                            ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                            offset_str = str(current_offset)
+                            ack_response = "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$" + str(len(offset_str)) + "\r\n" + offset_str + "\r\n"
                             try:
                                 master_socket.sendall(ack_response.encode())
                                 # GETACK command itself DOES count towards offset for future commands

@@ -76,16 +76,23 @@ def handle_replica_ack(client_socket, ack_offset):
 def propagate_command_to_replicas(command_bytes):
     """Send a command to all connected replicas."""
     with replicas_lock:
+        disconnected_replicas = []
         for replica in replicas[:]:  # Create a copy to avoid modification during iteration
             try:
                 replica.sendall(command_bytes)
-                # Update replication offset
-                config['master_repl_offset'] += len(command_bytes)
             except Exception as e:
                 print(f"Error sending to replica: {e}")
-                # Remove disconnected replica
-                if replica in replicas:
-                    replicas.remove(replica)
+                # Mark for removal
+                disconnected_replicas.append(replica)
+        
+        # Remove disconnected replicas
+        for replica in disconnected_replicas:
+            if replica in replicas:
+                replicas.remove(replica)
+        
+        # Update replication offset only once if we have replicas
+        if replicas:
+            config['master_repl_offset'] += len(command_bytes)
 
 
 def parse_resp(data: bytes):
@@ -108,6 +115,43 @@ def parse_resp(data: bytes):
         line_idx += 1
     
     return elements
+
+
+def parse_resp_with_consumed(data: bytes):
+    """Parse RESP format and return both elements and consumed bytes."""
+    try:
+        original_data = data
+        lines = data.decode().split('\r\n')
+        
+        if not lines[0].startswith('*'):
+            return [], 0
+        
+        num_elements = int(lines[0][1:])
+        elements = []
+        line_idx = 1
+        consumed_bytes = len(lines[0]) + 2  # +2 for \r\n
+        
+        for _ in range(num_elements):
+            if line_idx >= len(lines) or not lines[line_idx].startswith('$'):
+                return [], 0  # Incomplete command
+                
+            length = int(lines[line_idx][1:])
+            consumed_bytes += len(lines[line_idx]) + 2  # +2 for \r\n
+            line_idx += 1
+            
+            if line_idx >= len(lines):
+                return [], 0  # Incomplete command
+                
+            if len(lines[line_idx]) != length:
+                return [], 0  # Incomplete command
+                
+            elements.append(lines[line_idx])
+            consumed_bytes += len(lines[line_idx]) + 2  # +2 for \r\n
+            line_idx += 1
+        
+        return elements, consumed_bytes
+    except (UnicodeDecodeError, ValueError, IndexError):
+        return [], 0
 
 
 def is_key_expired(key):
@@ -685,47 +729,131 @@ def connect_to_master():
 
 def handle_master_commands(master_socket):
     """Handle commands received from master server."""
+    buffer = b""
+    rdb_received = False
+    
     try:
         while True:
             data = master_socket.recv(4096)
             if not data:
                 break
             
-            # Parse and execute commands from master
-            command_parts = parse_resp(data)
-            if command_parts:
-                command = command_parts[0].upper()
-                
-                if command == "REPLCONF" and len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
-                    # Master is requesting ACK - send our current offset
-                    current_offset = config.get('replica_offset', 0)
-                    ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
-                    master_socket.sendall(ack_response.encode())
-                elif command == "SET":
-                    # Execute SET command from master
-                    if len(command_parts) >= 3:
-                        key = command_parts[1]
-                        value = command_parts[2]
+            buffer += data
+            
+            # First, handle RDB file if not yet received
+            if not rdb_received:
+                # Check if buffer starts with RDB bulk string format
+                if buffer.startswith(b'$'):
+                    # Find the end of the length specification
+                    try:
+                        crlf_pos = buffer.find(b'\r\n')
+                        if crlf_pos == -1:
+                            continue  # Need more data for length
                         
-                        # Handle PX argument if present
-                        expiry_time = None
-                        if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
-                            try:
-                                expiry_ms = int(command_parts[4])
-                                expiry_time = time.time() + (expiry_ms / 1000.0)
-                            except ValueError:
-                                pass
+                        rdb_length = int(buffer[1:crlf_pos])
+                        total_rdb_size = crlf_pos + 2 + rdb_length  # $len\r\n + data
                         
-                        # Store the key-value pair
-                        with data_store_lock:
-                            data_store[key] = value
-                            if expiry_time:
-                                expiry_store[key] = expiry_time
-                            elif key in expiry_store:
-                                del expiry_store[key]
+                        if len(buffer) >= total_rdb_size:
+                            # We have the complete RDB file, skip it
+                            buffer = buffer[total_rdb_size:]  # Remove RDB data from buffer
+                            rdb_received = True
+                        else:
+                            continue  # Need more data for complete RDB
+                    except ValueError:
+                        print("Error parsing RDB length")
+                        break
+                else:
+                    # No RDB file expected, mark as received
+                    rdb_received = True
+            
+            # Process all complete commands in the buffer
+            while buffer and rdb_received:
+                # Try to parse one command from buffer
+                try:
+                    command_parts, consumed_bytes = parse_resp_with_consumed(buffer)
+                    if not command_parts or consumed_bytes == 0:
+                        break  # Need more data
                     
-                    # Update replica offset
-                    config['replica_offset'] += len(data)
+                    # Remove consumed bytes from buffer
+                    buffer = buffer[consumed_bytes:]
+                    
+                    # Process the command
+                    command = command_parts[0].upper()
+                    
+                    if command == "REPLCONF" and len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
+                        # Master is requesting ACK - send our current offset
+                        current_offset = config.get('replica_offset', 0)
+                        ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                        master_socket.sendall(ack_response.encode())
+                        # GETACK command itself doesn't count towards offset
+                    elif command == "SET":
+                        # Execute SET command from master
+                        if len(command_parts) >= 3:
+                            key = command_parts[1]
+                            value = command_parts[2]
+                            
+                            # Handle PX argument if present
+                            expiry_time = None
+                            if len(command_parts) >= 5 and command_parts[3].upper() == "PX":
+                                try:
+                                    expiry_ms = int(command_parts[4])
+                                    expiry_time = time.time() + (expiry_ms / 1000.0)
+                                except ValueError:
+                                    pass
+                            
+                            # Store the key-value pair (no response back to master)
+                            with data_store_lock:
+                                data_store[key] = value
+                                if expiry_time:
+                                    expiry_store[key] = expiry_time
+                                elif key in expiry_store:
+                                    del expiry_store[key]
+                        
+                        # Update replica offset with the consumed bytes
+                        config['replica_offset'] += consumed_bytes
+                    elif command == "GET":
+                        # Process GET command (though masters usually don't send these)
+                        # Just update offset, no response needed
+                        config['replica_offset'] += consumed_bytes
+                    elif command == "DEL":
+                        # Handle DEL command from master
+                        if len(command_parts) >= 2:
+                            with data_store_lock:
+                                for i in range(1, len(command_parts)):
+                                    key = command_parts[i]
+                                    if key in data_store:
+                                        del data_store[key]
+                                    if key in expiry_store:
+                                        del expiry_store[key]
+                        
+                        # Update replica offset
+                        config['replica_offset'] += consumed_bytes
+                    elif command == "INCR":
+                        # Handle INCR command from master
+                        if len(command_parts) >= 2:
+                            key = command_parts[1]
+                            with data_store_lock:
+                                try:
+                                    current_value = int(data_store.get(key, "0"))
+                                    data_store[key] = str(current_value + 1)
+                                    # Remove expiry if key exists
+                                    if key in expiry_store:
+                                        del expiry_store[key]
+                                except ValueError:
+                                    # If current value is not a number, treat as 0
+                                    data_store[key] = "1"
+                                    if key in expiry_store:
+                                        del expiry_store[key]
+                        
+                        # Update replica offset
+                        config['replica_offset'] += consumed_bytes
+                    else:
+                        # For any other command, just update offset
+                        config['replica_offset'] += consumed_bytes
+                        
+                except Exception as e:
+                    print(f"Error parsing command from master: {e}")
+                    break  # Break inner loop to get more data
                 
     except Exception as e:
         print(f"Error handling master commands: {e}")

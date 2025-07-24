@@ -780,12 +780,16 @@ def handle_master_commands(master_socket):
                     # Process the command
                     command = command_parts[0].upper()
                     
-                    if command == "REPLCONF" and len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
-                        # Master is requesting ACK - send our current offset
-                        current_offset = config.get('replica_offset', 0)
-                        ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
-                        master_socket.sendall(ack_response.encode())
-                        # GETACK command itself doesn't count towards offset, so don't increment
+                    if command == "REPLCONF":
+                        if len(command_parts) >= 2 and command_parts[1].upper() == "GETACK":
+                            # Master is requesting ACK - send our current offset
+                            current_offset = config.get('replica_offset', 0)
+                            ack_response = f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len(str(current_offset))}\r\n{current_offset}\r\n"
+                            master_socket.sendall(ack_response.encode())
+                            # GETACK command itself doesn't count towards offset, so don't increment
+                        else:
+                            # Other REPLCONF commands (not GETACK) should increment offset
+                            config['replica_offset'] += consumed_bytes
                     elif command == "PING":
                         # Handle PING command from master (keepalive)
                         # No response needed, just update offset

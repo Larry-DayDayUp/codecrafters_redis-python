@@ -383,6 +383,43 @@ def handle_command(client: socket.socket):
                     
                     response = f"${len(info_content)}\r\n{info_content}\r\n"
                     client.sendall(response.encode())
+            elif command == "REPLCONF":
+                # Handle REPLCONF command for replication configuration
+                if len(command_parts) >= 3:
+                    subcommand = command_parts[1].lower()
+                    if subcommand == "listening-port":
+                        # Replica is notifying us of its listening port
+                        port = command_parts[2]
+                        # For now, just acknowledge with OK
+                        client.sendall(b"+OK\r\n")
+                    elif subcommand == "capa":
+                        # Replica is notifying us of its capabilities
+                        capability = command_parts[2]
+                        # For now, just acknowledge with OK
+                        client.sendall(b"+OK\r\n")
+                    else:
+                        # Unknown REPLCONF subcommand
+                        client.sendall(b"-ERR unknown REPLCONF subcommand\r\n")
+                else:
+                    # Wrong number of arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'replconf' command\r\n")
+            elif command == "PSYNC":
+                # Handle PSYNC command for replication synchronization
+                if len(command_parts) >= 3:
+                    repl_id = command_parts[1]
+                    offset = command_parts[2]
+                    
+                    # For full resynchronization (first time connecting)
+                    if repl_id == "?" and offset == "-1":
+                        # Send FULLRESYNC response with our replication ID and offset
+                        response = f"+FULLRESYNC {config['master_replid']} {config['master_repl_offset']}\r\n"
+                        client.sendall(response.encode())
+                    else:
+                        # For now, only support full resync
+                        client.sendall(b"-ERR partial resync not supported\r\n")
+                else:
+                    # Wrong number of arguments
+                    client.sendall(b"-ERR wrong number of arguments for 'psync' command\r\n")
             else:
                 # Unknown command
                 client.sendall(f"-ERR unknown command '{command.lower()}'\r\n".encode())
@@ -425,12 +462,61 @@ def parse_arguments():
             i += 1
 
 
+def connect_to_master():
+    """Connect to master server and perform handshake if this is a replica."""
+    if config['replicaof'] is None:
+        return  # Not a replica, nothing to do
+    
+    master_host, master_port = config['replicaof']
+    
+    try:
+        # Connect to master
+        master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        master_socket.connect((master_host, master_port))
+        print(f"Connected to master at {master_host}:{master_port}")
+        
+        # Step 1: Send PING command
+        ping_command = b"*1\r\n$4\r\nPING\r\n"
+        master_socket.send(ping_command)
+        response = master_socket.recv(1024)
+        print(f"PING response: {response}")
+        
+        # Step 2: Send REPLCONF listening-port <PORT>
+        port_str = str(config['port'])
+        replconf_port_command = f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${len(port_str)}\r\n{port_str}\r\n".encode()
+        master_socket.send(replconf_port_command)
+        response = master_socket.recv(1024)
+        print(f"REPLCONF listening-port response: {response}")
+        
+        # Step 3: Send REPLCONF capa psync2
+        replconf_capa_command = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+        master_socket.send(replconf_capa_command)
+        response = master_socket.recv(1024)
+        print(f"REPLCONF capa response: {response}")
+        
+        # Step 4: Send PSYNC ? -1
+        psync_command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+        master_socket.send(psync_command)
+        response = master_socket.recv(1024)
+        print(f"PSYNC response: {response}")
+        
+        # Keep connection alive (in a real implementation, we'd handle replication data here)
+        # For now, we'll just keep the socket open
+        
+    except Exception as e:
+        print(f"Error connecting to master: {e}")
+
+
 def main():
     parse_arguments()
     
     # Load RDB file if it exists
     rdb_path = os.path.join(config['dir'], config['dbfilename'])
     parse_rdb_file(rdb_path)
+    
+    # If this is a replica, connect to master and perform handshake
+    if config['replicaof'] is not None:
+        threading.Thread(target=connect_to_master, daemon=True).start()
     
     port = config['port']
     print(f"Starting Redis server on port {port}...")
